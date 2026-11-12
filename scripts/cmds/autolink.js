@@ -1,110 +1,331 @@
+const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
-const axios = require("axios");
-
-const API_BASE = "https://eryxenx.agi.bd/api/alldl";
+const { parse } = require("url");
 
 module.exports = {
-    config: {
-        name: "autolink",
-        version: "3.0.0",
-        author: "EryXenX",
-        countDown: 5,
-        role: 0,
-        shortDescription: "Auto-download & send videos silently (no messages)",
-        category: "media",
-    },
+  config: {
+    name: "autodown",
+    version: "7.0",
+    author: "ItachiXD",
+    countDown: 5,
+    role: 0,
+    shortDescription: "Auto-download social media videos",
+    longDescription:
+      "Automatically downloads videos from TikTok, YouTube, Instagram, Facebook, X, Pinterest and other supported platforms using SOCIALDL APIs.",
+    category: "media",
+    guide: "Send any supported video link directly in chat."
+  },
 
-    onStart: async function () {},
+  onStart: async () => {},
 
-    onChat: async function ({ api, event }) {
-        const threadID = event.threadID;
-        const messageID = event.messageID;
-        const message = event.body || "";
+  onChat: async function ({ event, api }) {
+    let filePath = null;
 
-        const linkMatches = message.match(/(https?:\/\/[^\s]+)/g);
-        if (!linkMatches || linkMatches.length === 0) return;
+    try {
+      const text = event.body || "";
 
-        const uniqueLinks = [...new Set(linkMatches)];
-        const supportedLinks = uniqueLinks.filter(detectPlatform);
-        if (supportedLinks.length === 0) return;
+      const urlMatch = text.match(/https?:\/\/[^\s]+/i);
+      if (!urlMatch) return;
 
-        api.setMessageReaction("⏳", messageID, () => {}, true);
+      const url = urlMatch[0].replace(/[),.!?]+$/, "");
 
-        let successCount = 0;
-        let failCount = 0;
+      let parsed;
 
-        for (const url of supportedLinks) {
-            const filePath = path.join(os.tmpdir(), `autolink_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`);
+      try {
+        parsed = new URL(url);
+      } catch {
+        return;
+      }
 
-            try {
-                const response = await axios.get(API_BASE, {
-                    params: { url },
-                    responseType: "stream",
-                    timeout: 150000
-                });
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        return;
+      }
 
-                await new Promise((resolve, reject) => {
-                    const writer = fs.createWriteStream(filePath);
-                    response.data.pipe(writer);
-                    writer.on("finish", resolve);
-                    writer.on("error", reject);
-                });
+      const hostname = parsed.hostname.toLowerCase();
 
-                const stats = fs.statSync(filePath);
-                const fileSizeInMB = stats.size / (1024 * 1024);
+      // Detect platform
+      let platform = "social";
 
-                if (fileSizeInMB > 25) {
-                    fs.unlinkSync(filePath);
-                    failCount++;
-                    continue;
-                }
+      if (
+        hostname.includes("youtube.com") ||
+        hostname.includes("youtu.be")
+      ) {
+        platform = "youtube";
+      } else if (
+        hostname.includes("tiktok.com")
+      ) {
+        platform = "tiktok";
+      }
 
-                const title = extractTitleFromHeaders(response.headers);
+      // Starting reaction
+      api.setMessageReaction(
+        "🪄",
+        event.messageID,
+        () => {},
+        true
+      );
 
-                await api.sendMessage(
-                    {
-                        body:
-`📥 ᴠɪᴅᴇᴏ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ  
-━━━━━━━━━━━━━━━  
-🎬 ᴛɪᴛʟᴇ: ${title || "Video File"}  
-📦 sɪᴢᴇ: ${fileSizeInMB.toFixed(2)} MB  
-━━━━━━━━━━━━━━━`,
-                        attachment: fs.createReadStream(filePath)
-                    },
-                    threadID,
-                    () => fs.unlinkSync(filePath)
-                );
+      // Get download information
+      const data = await getDownloadData(url, platform);
 
-                successCount++;
+      if (!data || !data.download_url) {
+        throw new Error("No downloadable video found.");
+      }
 
-            } catch (err) {
-                console.error(`[autolink] Failed for ${url}: ${err.message}`);
-                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-                failCount++;
-            }
+      const videoUrl = data.download_url;
+
+      if (!/^https?:\/\//i.test(videoUrl)) {
+        throw new Error("Invalid download URL.");
+      }
+
+      // Cache folder
+      const cacheDir = path.join(__dirname, "cache");
+
+      await fs.promises.mkdir(cacheDir, {
+        recursive: true
+      });
+
+      filePath = path.join(
+        cacheDir,
+        `video_${Date.now()}.mp4`
+      );
+
+      // Download video
+      const response = await axios.get(videoUrl, {
+        responseType: "arraybuffer",
+        timeout: 120000,
+        maxContentLength: 87000000,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
         }
+      });
 
-        const finalReaction =
-            successCount > 0 && failCount === 0 ? "✅" :
-            successCount > 0 ? "⚠️" : "❌";
+      const buffer = Buffer.from(response.data);
 
-        api.setMessageReaction(finalReaction, messageID, () => {}, true);
+      // 87 MB limit
+      if (buffer.length > 87000000) {
+        throw new Error("Video exceeds the 87 MB limit.");
+      }
+
+      if (!buffer.length) {
+        throw new Error("Downloaded file is empty.");
+      }
+
+      // Save video
+      await fs.promises.writeFile(filePath, buffer);
+
+      // Success reaction
+      api.setMessageReaction(
+        "✅",
+        event.messageID,
+        () => {},
+        true
+      );
+
+      // Reply with video
+      api.sendMessage(
+        {
+          body: `✅ Downloaded Successfully\n\nPlatform: ${data.platform || platform}\n${data.title ? "Title: " + data.title : ""}`,
+          attachment: fs.createReadStream(filePath)
+        },
+        event.threadID,
+        async () => {
+          try {
+            await fs.promises.unlink(filePath);
+          } catch (error) {
+            console.error("Cache cleanup error:", error.message);
+          }
+
+          api.setMessageReaction(
+            "✅",
+            event.messageID,
+            () => {},
+            true
+          );
+        },
+        event.messageID
+      );
+
+    } catch (err) {
+      console.error("AutoDownload error:", err.message);
+
+      api.setMessageReaction(
+        "❌",
+        event.messageID,
+        () => {},
+        true
+      );
+
+      api.sendMessage(
+        "❌ Unable to download this video. The API may be unavailable, or the link may not be supported.",
+        event.threadID,
+        null,
+        event.messageID
+      );
+
+      if (filePath) {
+        try {
+          await fs.promises.unlink(filePath);
+        } catch {}
+      }
     }
+  }
 };
 
-function detectPlatform(url) {
-    if (/instagram\.com/i.test(url)) return "instagram";
-    if (/tiktok\.com/i.test(url)) return "tiktok";
-    if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
-    if (/youtube\.com|youtu\.be/i.test(url)) return "youtube";
-    return null;
+
+/* =========================================
+   SOCIALDL API CONFIGURATION
+========================================= */
+
+const SOCIAL_API =
+  "https://social-chi-amber.vercel.app/api/download";
+
+const TIKTOK_API =
+  "https://clip-forge-red.vercel.app/api/tiktok";
+
+const YOUTUBE_MP4_API =
+  "https://eliteprotech-apis.zone.id/download/ytmp4";
+
+
+/* =========================================
+   MAIN DOWNLOAD ROUTER
+========================================= */
+
+async function getDownloadData(url, platform) {
+  if (platform === "youtube") {
+    return getYouTubeData(url);
+  }
+
+  if (platform === "tiktok") {
+    return getTikTokData(url);
+  }
+
+  return getSocialData(url);
 }
 
-function extractTitleFromHeaders(headers) {
-    const disposition = headers["content-disposition"];
-    if (!disposition) return null;
-    const match = disposition.match(/filename="(.+?)\.mp4"/);
-    return match ? match[1].replace(/_/g, " ") : null;
-        }
+
+/* =========================================
+   SOCIAL MEDIA API
+========================================= */
+
+async function getSocialData(url) {
+  const response = await axios.get(SOCIAL_API, {
+    params: { url },
+    timeout: 120000
+  });
+
+  const data = response.data;
+
+  if (!data || data.success === false) {
+    throw new Error(
+      data?.message || data?.error || "Social API failed."
+    );
+  }
+
+  const formats = Array.isArray(data.formats)
+    ? data.formats
+    : [];
+
+  const best =
+    data.best?.download_url ||
+    data.best?.url ||
+    data.download_url ||
+    data.video_url ||
+    data.url ||
+    formats.map(item =>
+      item?.download_url || item?.url || item?.link
+    ).find(Boolean);
+
+  if (!best) {
+    throw new Error("No social video URL found.");
+  }
+
+  return {
+    download_url: best,
+    title: data.title || data.metadata?.title || "Social Video",
+    platform: data.platform || "Social Media"
+  };
+}
+
+
+/* =========================================
+   TIKTOK API
+========================================= */
+
+async function getTikTokData(url) {
+  const response = await axios.get(TIKTOK_API, {
+    params: { url },
+    timeout: 120000
+  });
+
+  const data = response.data;
+
+  if (!data || data.success === false) {
+    throw new Error(
+      data?.message || data?.error || "TikTok API failed."
+    );
+  }
+
+  const formats = Array.isArray(data.formats)
+    ? data.formats
+    : [];
+
+  const downloadUrl =
+    data.hd_video_url ||
+    data.hd_url ||
+    data.video_hd_url ||
+    data.video_url ||
+    data.download_url ||
+    data.url ||
+    formats.find(item =>
+      item?.url && !/mp3|audio/i.test(
+        `${item.format || ""} ${item.type || ""} ${item.mime || ""}`
+      )
+    )?.url;
+
+  if (!downloadUrl) {
+    throw new Error("TikTok video URL not found.");
+  }
+
+  return {
+    download_url: downloadUrl,
+    title:
+      data.title ||
+      data.desc ||
+      data.description ||
+      "TikTok Video",
+    platform: "TikTok"
+  };
+}
+
+
+/* =========================================
+   YOUTUBE MP4 API
+========================================= */
+
+async function getYouTubeData(url) {
+  const response = await axios.get(YOUTUBE_MP4_API, {
+    params: { url },
+    timeout: 120000
+  });
+
+  const data = response.data;
+
+  if (
+    !data ||
+    data.status === false ||
+    !data.result?.url
+  ) {
+    throw new Error(
+      data?.message || "YouTube MP4 API failed."
+    );
+  }
+
+  return {
+    download_url: data.result.url,
+    title: data.result.title || "YouTube Video",
+    platform: "YouTube"
+  };
+}
