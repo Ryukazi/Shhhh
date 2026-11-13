@@ -1,18 +1,18 @@
+
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-const { parse } = require("url");
 
 module.exports = {
   config: {
-    name: "autodown",
-    version: "7.0",
-    author: "ItachiXD",
+    name: "autolink",
+    version: "1.0",
+    author: "Denish",
     countDown: 5,
     role: 0,
     shortDescription: "Auto-download social media videos",
     longDescription:
-      "Automatically downloads videos from TikTok, YouTube, Instagram, Facebook, X, Pinterest and other supported platforms using SOCIALDL APIs.",
+      "Automatically downloads videos from supported social media platforms.",
     category: "media",
     guide: "Send any supported video link directly in chat."
   },
@@ -24,27 +24,22 @@ module.exports = {
 
     try {
       const text = event.body || "";
+      const match = text.match(/https?:\/\/[^\s]+/i);
+      if (!match) return;
 
-      const urlMatch = text.match(/https?:\/\/[^\s]+/i);
-      if (!urlMatch) return;
-
-      const url = urlMatch[0].replace(/[),.!?]+$/, "");
+      const url = match[0].replace(/[),.!?]+$/, "");
 
       let parsed;
-
       try {
         parsed = new URL(url);
       } catch {
         return;
       }
 
-      if (!["http:", "https:"].includes(parsed.protocol)) {
-        return;
-      }
+      if (!["http:", "https:"].includes(parsed.protocol)) return;
 
       const hostname = parsed.hostname.toLowerCase();
 
-      // Detect platform
       let platform = "social";
 
       if (
@@ -52,13 +47,16 @@ module.exports = {
         hostname.includes("youtu.be")
       ) {
         platform = "youtube";
-      } else if (
-        hostname.includes("tiktok.com")
-      ) {
+      } else if (hostname.includes("tiktok.com")) {
         platform = "tiktok";
+      } else if (
+        hostname.includes("pinterest.com") ||
+        hostname.includes("pin.it") ||
+        hostname.includes("pinterest.")
+      ) {
+        platform = "pinterest";
       }
 
-      // Starting reaction
       api.setMessageReaction(
         "🪄",
         event.messageID,
@@ -66,20 +64,18 @@ module.exports = {
         true
       );
 
-      // Get download information
-      const data = await getDownloadData(url, platform);
+      let data;
+
+      if (platform === "pinterest") {
+        data = await getPinterestData(url);
+      } else {
+        data = await getDownloadData(url, platform);
+      }
 
       if (!data || !data.download_url) {
         throw new Error("No downloadable video found.");
       }
 
-      const videoUrl = data.download_url;
-
-      if (!/^https?:\/\//i.test(videoUrl)) {
-        throw new Error("Invalid download URL.");
-      }
-
-      // Cache folder
       const cacheDir = path.join(__dirname, "cache");
 
       await fs.promises.mkdir(cacheDir, {
@@ -91,11 +87,11 @@ module.exports = {
         `video_${Date.now()}.mp4`
       );
 
-      // Download video
-      const response = await axios.get(videoUrl, {
+      const response = await axios.get(data.download_url, {
         responseType: "arraybuffer",
-        timeout: 120000,
+        timeout: 180000,
         maxContentLength: 87000000,
+        maxBodyLength: 87000000,
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
@@ -104,19 +100,16 @@ module.exports = {
 
       const buffer = Buffer.from(response.data);
 
-      // 87 MB limit
-      if (buffer.length > 87000000) {
-        throw new Error("Video exceeds the 87 MB limit.");
-      }
-
       if (!buffer.length) {
         throw new Error("Downloaded file is empty.");
       }
 
-      // Save video
+      if (buffer.length > 87000000) {
+        throw new Error("Video exceeds the 87 MB limit.");
+      }
+
       await fs.promises.writeFile(filePath, buffer);
 
-      // Success reaction
       api.setMessageReaction(
         "✅",
         event.messageID,
@@ -124,26 +117,22 @@ module.exports = {
         true
       );
 
-      // Reply with video
       api.sendMessage(
         {
-          body: `✅ Downloaded Successfully\n\nPlatform: ${data.platform || platform}\n${data.title ? "Title: " + data.title : ""}`,
+          body:
+            `✅ Downloaded Successfully\n\n` +
+            `Platform: ${data.platform}\n` +
+            `Title: ${data.title || "Video"}\n` +
+            (data.quality ? `Quality: ${data.quality}` : ""),
           attachment: fs.createReadStream(filePath)
         },
         event.threadID,
         async () => {
           try {
             await fs.promises.unlink(filePath);
-          } catch (error) {
-            console.error("Cache cleanup error:", error.message);
+          } catch (err) {
+            console.error("Cache cleanup:", err.message);
           }
-
-          api.setMessageReaction(
-            "✅",
-            event.messageID,
-            () => {},
-            true
-          );
         },
         event.messageID
       );
@@ -159,7 +148,7 @@ module.exports = {
       );
 
       api.sendMessage(
-        "❌ Unable to download this video. The API may be unavailable, or the link may not be supported.",
+        "❌ Unable to download this video. The API may be unavailable, or the video may exceed the file size limit.",
         event.threadID,
         null,
         event.messageID
@@ -176,7 +165,7 @@ module.exports = {
 
 
 /* =========================================
-   SOCIALDL API CONFIGURATION
+   API CONFIGURATION
 ========================================= */
 
 const SOCIAL_API =
@@ -188,9 +177,12 @@ const TIKTOK_API =
 const YOUTUBE_MP4_API =
   "https://eliteprotech-apis.zone.id/download/ytmp4";
 
+const PINTEREST_API =
+  "https://ly-ani.vercel.app/api/download";
+
 
 /* =========================================
-   MAIN DOWNLOAD ROUTER
+   MAIN ROUTER
 ========================================= */
 
 async function getDownloadData(url, platform) {
@@ -203,6 +195,58 @@ async function getDownloadData(url, platform) {
   }
 
   return getSocialData(url);
+}
+
+
+/* =========================================
+   PINTEREST API
+   Audio + Video HLS playlist
+========================================= */
+
+async function getPinterestData(url) {
+  const response = await axios.get(PINTEREST_API, {
+    params: { url },
+    timeout: 180000
+  });
+
+  const data = response.data;
+
+  if (!data || data.ok !== true) {
+    throw new Error(
+      data?.message || "Pinterest API failed."
+    );
+  }
+
+  const formats = Array.isArray(data.formats)
+    ? data.formats
+    : [];
+
+  if (!formats.length) {
+    throw new Error("No Pinterest formats found.");
+  }
+
+  // Prefer the highest available quality.
+  const selected = formats
+    .filter(item =>
+      item?.url &&
+      item.has_audio === true
+    )
+    .sort((a, b) =>
+      (b.height || 0) - (a.height || 0)
+    )[0];
+
+  if (!selected) {
+    throw new Error(
+      "No Pinterest audio + video format found."
+    );
+  }
+
+  return {
+    download_url: selected.url,
+    title: data.title || "Pinterest Video",
+    platform: "Pinterest",
+    quality: selected.quality || "Auto"
+  };
 }
 
 
@@ -280,7 +324,8 @@ async function getTikTokData(url) {
     data.download_url ||
     data.url ||
     formats.find(item =>
-      item?.url && !/mp3|audio/i.test(
+      item?.url &&
+      !/mp3|audio/i.test(
         `${item.format || ""} ${item.type || ""} ${item.mime || ""}`
       )
     )?.url;
@@ -302,7 +347,7 @@ async function getTikTokData(url) {
 
 
 /* =========================================
-   YOUTUBE MP4 API
+   YOUTUBE API
 ========================================= */
 
 async function getYouTubeData(url) {
