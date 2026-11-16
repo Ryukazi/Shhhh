@@ -1,159 +1,169 @@
 const axios = require("axios");
 const fs = require("fs-extra");
 const path = require("path");
+const os = require("os");
 
 module.exports = {
-  config: {
-    name: "monitor",
-    aliases: ["m"],
-    version: "2.0",
-    author: "Denish",
-    role: 0,
-    shortDescription: {
-      en: "Displays bot uptime, ping, and a random anime image."
-    },
-    longDescription: {
-      en: "Shows bot uptime, response ping, and a random anime picture."
-    },
-    category: "info",
-    guide: {
-      en: "Use {p}monitor to check uptime, ping, and get a random anime image."
-    }
-  },
+config: {
+name: "monitor",
+aliases: ["m"],
+version: "3.0",
+author: "Denish",
+role: 0,
+shortDescription: {
+en: "Displays bot system information and a random anime image."
+},
+longDescription: {
+en: "Shows uptime, ping, RAM usage, Node.js version and platform."
+},
+category: "info",
+guide: {
+en: "Use {p}monitor to check bot system status."
+}
+},
 
-  onStart: async function ({ api, event }) {
-    const startTime = Date.now();
+onStart: async function ({ api, event }) {
+const startTime = Date.now();
 
-    const searchList = [
-      "lelouch",
-      "tanjiro",
-      "ichigo",
-      "aizen",
-      "luffy",
-      "zoro"
-    ];
+const searchList = [
+  "lelouch",
+  "tanjiro",
+  "ichigo",
+  "aizen",
+  "luffy",
+  "zoro"
+];
 
-    const randomSearch =
-      searchList[Math.floor(Math.random() * searchList.length)];
+const randomSearch =
+  searchList[Math.floor(Math.random() * searchList.length)];
 
-    const cacheDir = path.join(__dirname, "cache");
-    const imgPath = path.join(
-      cacheDir,
-      `monitor_${Date.now()}.jpg`
-    );
+const cacheDir = path.join(__dirname, "cache");
+const imgPath = path.join(
+  cacheDir,
+  `monitor_${Date.now()}.jpg`
+);
 
-    try {
-      // Fetch images from the new Dens Pinterest API.
-      const apiUrl =
-        "https://dens-pin-api.vercel.app/api/pinterest-images";
+try {
+  // Fetch random anime image.
+  const res = await axios.get(
+    "https://dens-pin-api.vercel.app/api/pinterest-images",
+    {
+      params: { query: randomSearch },
+      timeout: 30000
+    }
+  );
 
-      const res = await axios.get(apiUrl, {
-        params: { query: randomSearch },
-        timeout: 30000
-      });
+  const images = res.data?.images || [];
 
-      const images = res.data?.images || [];
+  if (
+    res.data?.status !== true ||
+    !Array.isArray(images) ||
+    images.length === 0
+  ) {
+    throw new Error("No anime images found");
+  }
 
-      if (
-        res.data?.status !== true ||
-        !Array.isArray(images) ||
-        images.length === 0
-      ) {
-        return api.sendMessage(
-          "❌ No anime images found from Pinterest API.",
-          event.threadID,
-          event.messageID
-        );
-      }
+  const selected =
+    images[Math.floor(Math.random() * images.length)];
 
-      // Select a random result.
-      const selected =
-        images[Math.floor(Math.random() * images.length)];
+  if (!selected?.url) {
+    throw new Error("Invalid image URL");
+  }
 
-      if (!selected?.url) {
-        throw new Error("Invalid image URL received");
-      }
+  // Download image.
+  const imgResponse = await axios.get(selected.url, {
+    responseType: "arraybuffer",
+    timeout: 30000,
+    maxRedirects: 5
+  });
 
-      // Download the actual JPG image.
-      const imgResponse = await axios.get(selected.url, {
-        responseType: "arraybuffer",
-        timeout: 30000,
-        maxRedirects: 5
-      });
+  const contentType =
+    imgResponse.headers["content-type"] || "";
 
-      const contentType =
-        imgResponse.headers["content-type"] || "";
+  if (!contentType.toLowerCase().includes("image/")) {
+    throw new Error("Invalid image response");
+  }
 
-      if (!contentType.includes("image/")) {
-        throw new Error("Pinterest API did not return an image");
-      }
+  await fs.ensureDir(cacheDir);
+  await fs.outputFile(imgPath, imgResponse.data);
 
-      // Save image to cache.
-      await fs.ensureDir(cacheDir);
-      await fs.outputFile(imgPath, imgResponse.data);
+  // Calculate uptime.
+  const uptimeSec = Math.floor(process.uptime());
 
-      // Calculate uptime.
-      const uptimeSec = Math.floor(process.uptime());
+  const days = Math.floor(uptimeSec / 86400);
+  const hours = Math.floor((uptimeSec % 86400) / 3600);
+  const minutes = Math.floor((uptimeSec % 3600) / 60);
+  const seconds = uptimeSec % 60;
 
-      const days = Math.floor(uptimeSec / 86400);
-      const hours = Math.floor((uptimeSec % 86400) / 3600);
-      const minutes = Math.floor((uptimeSec % 3600) / 60);
-      const seconds = uptimeSec % 60;
+  const uptimeStr = [
+    days > 0 ? `${days}d` : null,
+    hours > 0 ? `${hours}h` : null,
+    minutes > 0 ? `${minutes}m` : null,
+    `${seconds}s`
+  ].filter(Boolean).join(" ");
 
-      let uptimeStr =
-        `${days} days, ${hours} hours, ` +
-        `${minutes} minutes, ${seconds} seconds`;
+  // Calculate command response time.
+  const ping = Date.now() - startTime;
 
-      if (days === 0) {
-        uptimeStr =
-          `${hours} hours, ${minutes} minutes, ${seconds} seconds`;
-      }
+  // RAM usage.
+  const memory = process.memoryUsage();
+  const ramUsage = (memory.rss / 1024 / 1024).toFixed(1);
 
-      if (days === 0 && hours === 0) {
-        uptimeStr = `${minutes} minutes, ${seconds} seconds`;
-      }
+  // Additional system information.
+  const nodeVersion = process.version;
+  const platform = os.platform();
 
-      if (days === 0 && hours === 0 && minutes === 0) {
-        uptimeStr = `${seconds} seconds`;
-      }
+  // Build monitor dashboard.
+  const message =
+    `╭────────────────────╮\n` +
+    `       SYSTEM MONITOR\n` +
+    `╰────────────────────╯\n\n` +
 
-      // Calculate command response time.
-      const ping = Date.now() - startTime;
+    `  ◉  STATUS\n` +
+    `     Online\n\n` +
 
-      const animeName =
-        randomSearch.charAt(0).toUpperCase() +
-        randomSearch.slice(1);
+    `  ◷  UPTIME\n` +
+    `     ${uptimeStr}\n\n` +
 
-      // Send monitor information and image.
-      await api.sendMessage(
-        {
-          body:
-            `👋 Hello! Your bot has been running for:\n` +
-            `⏱️ Uptime: ${uptimeStr}\n\n` +
-            `📡 Current Ping: ${ping}ms\n` +
-            `🎨 Random Anime Pic: ${animeName}\n` +
-            `🖼️ Image: ${images.length} results available`,
-          attachment: fs.createReadStream(imgPath)
-        },
-        event.threadID,
-        event.messageID
-      );
+    `  ↯  RESPONSE TIME\n` +
+    `     ${ping} ms\n\n` +
 
-    } catch (error) {
-      console.error(
-        "Monitor command error:",
-        error.response?.data || error.message || error
-      );
+    `  ▣  RAM USAGE\n` +
+    `     ${ramUsage} MB\n\n` +
 
-      return api.sendMessage(
-        "⚠️ An error occurred while fetching monitor information.",
-        event.threadID,
-        event.messageID
-      );
+    `  ⚙  NODE.JS\n` +
+    `     ${nodeVersion}\n\n` +
 
-    } finally {
-      // Remove temporary image.
-      await fs.unlink(imgPath).catch(() => {});
-    }
-  }
+    `  ◈  PLATFORM\n` +
+    `     ${platform}\n\n` +
+
+    `  ──────────────────\n` +
+    `     SERVICE RUNNING`;
+
+  await api.sendMessage(
+    {
+      body: message,
+      attachment: fs.createReadStream(imgPath)
+    },
+    event.threadID,
+    event.messageID
+  );
+
+} catch (error) {
+  console.error(
+    "Monitor command error:",
+    error.response?.data || error.message || error
+  );
+
+  return api.sendMessage(
+    "❌ Unable to fetch monitor information. Please try again later.",
+    event.threadID,
+    event.messageID
+  );
+
+} finally {
+  await fs.unlink(imgPath).catch(() => {});
+}
+
+}
 };
