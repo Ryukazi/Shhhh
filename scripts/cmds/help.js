@@ -3,76 +3,203 @@ const axios = require("axios");
 
 module.exports.config = {
   name: "help",
-  version: "3.2",
+  version: "5.0",
   author: "Lord Denish",
   role: 0,
   category: "info",
-  shortDescription: "Clean structured help",
-  longDescription: "Shows all commands in long, record-style list",
-  guide: "{p}help"
+  shortDescription: "Advanced command information",
+  longDescription: "Displays all commands or detailed information about a specific command.",
+  guide: "{p}help [command]"
 };
 
-module.exports.onStart = async function ({ api, event }) {
+module.exports.onStart = async function ({ api, event, args }) {
   try {
-    // UPTIME
-    const up = process.uptime();
-    const h = Math.floor(up / 3600);
-    const m = Math.floor((up % 3600) / 60);
-    const s = Math.floor(up % 60);
-    const uptime = `${h}h ${m}m ${s}s`;
-
-    // COMMAND LIST
     const commands = global.GoatBot?.commands;
 
     if (!commands) {
       return api.sendMessage(
-        "❌ Cannot find command list.",
+        "ERROR: Cannot find command list.",
         event.threadID,
         event.messageID
       );
     }
 
+    const prefix =
+      global.GoatBot?.config?.prefix ||
+      global.GoatBot?.config?.PREFIX ||
+      global.GoatBot?.config?.commandPrefix ||
+      "{p}";
+
+    // FIND COMMAND MODE
+    if (args && args.length > 0) {
+      const searchName = args[0].toLowerCase();
+
+      let found = null;
+      let commandName = "";
+
+      for (const [name, info] of commands.entries()) {
+        const aliases = info.config?.aliases || [];
+
+        if (
+          name.toLowerCase() === searchName ||
+          aliases.some(alias =>
+            String(alias).toLowerCase() === searchName
+          )
+        ) {
+          found = info;
+          commandName = name;
+          break;
+        }
+      }
+
+      if (!found) {
+        return api.sendMessage(
+          `COMMAND NOT FOUND: ${searchName}\n\nUse ${prefix}help to see all commands.`,
+          event.threadID,
+          event.messageID
+        );
+      }
+
+      const config = found.config || {};
+
+      const description =
+        config.longDescription ||
+        config.shortDescription ||
+        "No description available.";
+
+      const shortDescription =
+        config.shortDescription || "Not provided";
+
+      const aliases = config.aliases || [];
+
+      const guide = config.guide
+        ? String(config.guide).replace(/\{p\}/g, prefix)
+        : `${prefix}${commandName}`;
+
+      const role = config.role ?? 0;
+
+      const detail =
+`╭──────────────────────────╮
+│    COMMAND INFORMATION  │
+╰──────────────────────────╯
+
+NAME        : ${commandName}
+AUTHOR      : ${config.author || "Unknown"}
+VERSION     : ${config.version || "Unknown"}
+CATEGORY    : ${config.category || "Others"}
+ROLE        : ${role}
+
+SHORT DESCRIPTION
+${shortDescription}
+
+FULL DESCRIPTION
+${description}
+
+ALIASES
+${aliases.length ? aliases.join(", ") : "None"}
+
+USAGE GUIDE
+${guide}
+
+STATUS      : AVAILABLE`;
+
+      return api.sendMessage(
+        detail,
+        event.threadID,
+        event.messageID
+      );
+    }
+
+    // ALL COMMANDS MODE
+
+    const up = Math.floor(process.uptime());
+
+    const d = Math.floor(up / 86400);
+    const h = Math.floor((up % 86400) / 3600);
+    const m = Math.floor((up % 3600) / 60);
+    const s = up % 60;
+
+    const uptime = [
+      d > 0 ? `${d}d` : null,
+      h > 0 ? `${h}h` : null,
+      m > 0 ? `${m}m` : null,
+      `${s}s`
+    ].filter(Boolean).join(" ");
+
     const groups = {};
 
     for (const [name, info] of commands.entries()) {
-      const cat = info.config.category || "Others";
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(name);
+      const category = info.config?.category || "Others";
+
+      if (!groups[category]) groups[category] = [];
+
+      groups[category].push(name);
     }
 
-    // HELP MENU
     let text = "";
-    text += "================ HELP MENU ================\n";
-    text += `Bot Owner : Lord Denish\n`;
-    text += `Total Cmds: ${commands.size}\n`;
-    text += `Uptime    : ${uptime}\n`;
-    text += "===========================================\n\n";
 
-    for (const [cat, cmds] of Object.entries(groups)) {
-      text += `== ${cat.toUpperCase()} ==\n`;
-      text += cmds.sort().map(c => `• ${c}`).join("\n");
-      text += "\n\n-------------------------------------------\n\n";
+    text += "╭────────────────────────╮\n";
+    text += "│   root@Goatbotv2:~     │\n";
+    text += "╰────────────────────────╯\n\n";
+
+    text += "SYSTEM INFORMATION\n";
+    text += "────────────────────────\n";
+    text += `COMMANDS   : ${commands.size}\n`;
+    text += `CATEGORIES : ${Object.keys(groups).length}\n`;
+    text += `UPTIME     : ${uptime}\n`;
+    text += `STATUS     : RUNNING\n`;
+    text += `PREFIX     : ${prefix}\n\n`;
+
+    text += "AVAILABLE COMMANDS\n";
+    text += "────────────────────────\n\n";
+
+    const sortedGroups = Object.entries(groups).sort(
+      ([a], [b]) => a.localeCompare(b)
+    );
+
+    for (const [category, cmds] of sortedGroups) {
+      const sortedCommands = cmds.sort((a, b) =>
+        a.localeCompare(b)
+      );
+
+      text += `[ ${category.toUpperCase()} ]\n`;
+
+      sortedCommands.forEach((name, index) => {
+        text += `${String(index + 1).padStart(2, "0")}. ${name}\n`;
+      });
+
+      text += "\n";
     }
 
-    text += "================= END =====================";
+    text += "USAGE GUIDE\n";
+    text += "────────────────────────\n";
+    text += `Prefix  : ${prefix}\n`;
+    text += `Example : ${prefix}help\n`;
+    text += `Details : ${prefix}help autolink\n`;
 
-    // RANDOM IMAGE TOPICS
+    // RANDOM PINTEREST IMAGE
+
     const topics = [
-      "ichigo", "luffy", "Aizen", "Shi hao", "Zoro", "Sanji",
-      "sinji", "goku", "k dash", "tokyo", "samurai", "retro",
-      "night city", "dragon", "black wallpaper", "mountains", "sky",
-      "flowers", "fog", "magical fantasy"
+      "ichigo", "luffy", "aizen", "shi hao",
+      "zoro", "sanji", "shinji", "goku",
+      "k dash", "tokyo", "samurai",
+      "retro aesthetic", "night city",
+      "dragon", "black wallpaper",
+      "mountains", "sky aesthetic",
+      "flowers", "fog aesthetic",
+      "magical fantasy"
     ];
 
     let imageStream = null;
 
-    // TRY PINTEREST IMAGE
     try {
-      const topic = topics[Math.floor(Math.random() * topics.length)];
+      const topic =
+        topics[Math.floor(Math.random() * topics.length)];
 
       const pin = await axios.get(
-        `https://dens-pin-api.vercel.app/api/pinterest-images?query=${encodeURIComponent(topic)}`,
+        "https://dens-pin-api.vercel.app/api/pinterest-images",
         {
+          params: { query: topic },
           timeout: 15000,
           headers: { "User-Agent": "Mozilla/5.0" }
         }
@@ -80,34 +207,36 @@ module.exports.onStart = async function ({ api, event }) {
 
       const images = pin.data?.images || [];
 
-      if (pin.data?.status && images.length > 0) {
-        const selected = images[Math.floor(Math.random() * images.length)];
+      if (pin.data?.status === true && images.length > 0) {
+        const selected =
+          images[Math.floor(Math.random() * images.length)];
 
         if (selected?.url) {
           const response = await axios.get(selected.url, {
             responseType: "stream",
             timeout: 20000,
+            maxRedirects: 5,
             headers: { "User-Agent": "Mozilla/5.0" }
           });
 
-          const contentType = response.headers["content-type"] || "";
+          const contentType =
+            response.headers["content-type"] || "";
 
-          if (contentType.includes("image/")) {
+          if (contentType.toLowerCase().includes("image/")) {
             imageStream = response.data;
           } else {
             response.data.destroy();
           }
         }
       }
-    } catch (imageError) {
-      console.log("[HELP IMAGE ERROR]", imageError.message);
+    } catch (err) {
+      console.log("[HELP IMAGE ERROR]", err.message);
     }
 
-    // SEND WITH IMAGE OR TEXT ONLY
     if (imageStream) {
       return api.sendMessage(
         {
-          body: text,
+          body: text.trimEnd(),
           attachment: imageStream
         },
         event.threadID,
@@ -115,9 +244,8 @@ module.exports.onStart = async function ({ api, event }) {
       );
     }
 
-    // IMAGE FAILED: SEND HELP MENU WITHOUT IMAGE
     return api.sendMessage(
-      text,
+      text.trimEnd(),
       event.threadID,
       event.messageID
     );
@@ -126,7 +254,7 @@ module.exports.onStart = async function ({ api, event }) {
     console.log("[HELP ERROR]", error);
 
     return api.sendMessage(
-      "❌ Failed to load help menu.",
+      "ERROR: Failed to load help menu.",
       event.threadID,
       event.messageID
     );
